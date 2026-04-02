@@ -28,7 +28,8 @@ import os, sys  # noqa: E401
 
 import gi
 gi.require_version("Gio", "2.0")
-from gi.repository import Gio, GLib  # noqa: E402
+gi.require_version("GLibUnix", "2.0")
+from gi.repository import Gio, GLib, GLibUnix  # noqa: E402
 
 DBUS_NAME = "org.sensord"
 DBUS_PATH = "/org/sensord"
@@ -189,11 +190,10 @@ class ThermalSensor:
 
                 try:
                     chip = self.Chip(full_label, path)
-                    chip.read()
                     self.chips.append(chip)
                     print(f"  thermal: {full_label}", file=sys.stderr)
                 except OSError as e:
-                    print(f"  thermal skip: {e}", file=sys.stderr)
+                    print(f"  thermal skip {full_label}: {e}", file=sys.stderr)
 
     @staticmethod
     def _read_file(path):
@@ -569,12 +569,12 @@ class Daemon:
         self.bus = conn
         iface_map = {i.name: i for i in self.node.interfaces}
         for name in self.sensors:
-            conn.register_object(
+            conn.register_object_with_closures2(
                 DBUS_PATH, iface_map[f"org.sensord.{name}"],
                 self._on_call, None, None,
             )
         for name in self.pending:
-            conn.register_object(
+            conn.register_object_with_closures2(
                 DBUS_PATH, iface_map[f"org.sensord.{name}"],
                 self._on_call, None, None,
             )
@@ -629,8 +629,8 @@ class Daemon:
         for name in list(self.pending):
             GLib.timeout_add_seconds(self.pending[name][1], self._make_probe(name))
 
-        GLib.unix_signal_add(GLib.PRIORITY_DEFAULT, 2, self.loop.quit)
-        GLib.unix_signal_add(GLib.PRIORITY_DEFAULT, 15, self.loop.quit)
+        GLibUnix.signal_add(GLib.PRIORITY_DEFAULT, 2, self.loop.quit)
+        GLibUnix.signal_add(GLib.PRIORITY_DEFAULT, 15, self.loop.quit)
         self.loop.run()
 
         for s in self.sensors.values():
