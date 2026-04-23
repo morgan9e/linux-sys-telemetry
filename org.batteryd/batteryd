@@ -221,9 +221,13 @@ class Battery:
 
     def on_suspend(self):
         reading = read_battery(self.sys_bus, self.bat_path)
+        now = time.time()
         if reading:
             self.current = reading
-        now = time.time()
+            self.buf.append((
+                now, reading['level'], reading['energy_wh'],
+                reading['power_w'], reading['voltage_v'], float(reading['state'])))
+            self.last_sample_ts = now
         if self.current and self.last_state is not None:
             self._close_session(now, self.current['level'])
         self._log_event('suspend')

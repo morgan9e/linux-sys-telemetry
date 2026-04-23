@@ -442,7 +442,7 @@ class GapRow(Adw.ActionRow):
     """Gap between sessions — labeled from events if available, otherwise inferred."""
 
     def __init__(self, prev_end_ts, prev_end_level, next_start_ts, next_start_level,
-                 gap_event=None):
+                 gap_event=None, wh_delta=None):
         super().__init__()
 
         t_start = datetime.fromtimestamp(prev_end_ts).strftime('%H:%M')
@@ -472,8 +472,18 @@ class GapRow(Adw.ActionRow):
                 kind = 'Suspended'
                 icon = 'media-playback-pause-symbolic'
 
+        subtitle = f'{t_start} – {t_end}  ·  {format_duration(duration)}'
+        if wh_delta is not None and abs(wh_delta) >= 0.05:
+            hours = duration / 3600
+            if wh_delta > 0:
+                subtitle += f'  ·  −{wh_delta:.2f} Wh'
+                if hours > 0:
+                    subtitle += f' ({wh_delta / hours:.2f} W avg)'
+            else:
+                subtitle += f'  ·  +{-wh_delta:.2f} Wh'
+
         self.set_title(kind)
-        self.set_subtitle(f'{t_start} – {t_end}  ·  {format_duration(duration)}')
+        self.set_subtitle(subtitle)
         self.add_css_class('dim-label')
 
         img = Gtk.Image.new_from_icon_name(icon)
@@ -676,6 +686,27 @@ class BatteryWindow(Adw.ApplicationWindow):
                     return etype
             return None
 
+        # derive pack capacity from any sample with both level and energy present,
+        # used as fallback when bracketing samples lack energy_wh (old rows default to 0)
+        capacity_wh = None
+        for s in samples:
+            if s[1] > 0 and s[2] > 0:
+                c = s[2] / (s[1] / 100.0)
+                if capacity_wh is None or c > capacity_wh:
+                    capacity_wh = c
+
+        def gap_wh_delta(gap_start, gap_end,
+                         prev_end_level, next_start_level):
+            """Energy drawn across a gap, in Wh (positive = drained)."""
+            before = next((s for s in reversed(samples) if s[0] <= gap_start), None)
+            after = next((s for s in samples if s[0] >= gap_end), None)
+            if before and after and before[2] > 0 and after[2] > 0:
+                return before[2] - after[2]
+            # fallback: estimate from level delta × capacity
+            if capacity_wh is not None:
+                return (prev_end_level - next_start_level) / 100.0 * capacity_wh
+            return None
+
         prev = None
         for s in merged:
             start_ts, end_ts, start_lvl, end_lvl, status = s
@@ -685,9 +716,11 @@ class BatteryWindow(Adw.ApplicationWindow):
                 gap = start_ts - prev_end
                 if gap > GAP_THRESHOLD:
                     gap_event = find_gap_event(prev_end, start_ts)
+                    wh_delta = gap_wh_delta(prev_end, start_ts,
+                                             prev_end_lvl, start_lvl)
                     self.session_group.add(
                         GapRow(prev_end, prev_end_lvl, start_ts, start_lvl,
-                               gap_event))
+                               gap_event, wh_delta))
 
             self.session_group.add(
                 SessionRow(start_ts, end_ts, start_lvl, end_lvl, status))
