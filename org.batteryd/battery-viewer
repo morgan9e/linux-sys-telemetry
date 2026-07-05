@@ -395,7 +395,8 @@ class PowerChart(Gtk.DrawingArea):
 # ── Session row ───────────────────────────────────────────
 
 class SessionRow(Adw.ActionRow):
-    def __init__(self, start_ts, end_ts, start_level, end_level, status):
+    def __init__(self, start_ts, end_ts, start_level, end_level, status,
+                 avg_w=None):
         super().__init__()
 
         t_start = datetime.fromtimestamp(start_ts).strftime('%H:%M')
@@ -414,7 +415,9 @@ class SessionRow(Adw.ActionRow):
             arrow = '→'
 
         subtitle = f'{t_start} – {t_end}  ·  {format_duration(duration)}'
-        if hours > 0 and status in ('Discharging', 'Charging'):
+        if avg_w is not None and status in ('Discharging', 'Charging'):
+            subtitle += f'  ·  {avg_w:.1f}W'
+        elif hours > 0 and status in ('Discharging', 'Charging'):
             rate = abs(end_level - start_level) / hours
             subtitle += f'  ·  {rate:.1f}%/hr'
 
@@ -695,6 +698,19 @@ class BatteryWindow(Adw.ApplicationWindow):
                 if capacity_wh is None or c > capacity_wh:
                     capacity_wh = c
 
+        def session_avg_w(start_ts, end_ts):
+            """Average charge/discharge power over a session, in W.
+
+            Mean of the per-sample power readings (UPower EnergyRate,
+            always a magnitude) inside the session. Using the reported
+            rate rather than energy-delta/time keeps short sessions
+            sane — a 2s blip can't extrapolate into hundreds of watts."""
+            powers = [s[3] for s in samples
+                      if start_ts <= s[0] <= end_ts and s[3] > 0]
+            if not powers:
+                return None
+            return sum(powers) / len(powers)
+
         def gap_wh_delta(gap_start, gap_end,
                          prev_end_level, next_start_level):
             """Energy drawn across a gap, in Wh (positive = drained)."""
@@ -723,7 +739,8 @@ class BatteryWindow(Adw.ApplicationWindow):
                                gap_event, wh_delta))
 
             self.session_group.add(
-                SessionRow(start_ts, end_ts, start_lvl, end_lvl, status))
+                SessionRow(start_ts, end_ts, start_lvl, end_lvl, status,
+                           session_avg_w(start_ts, end_ts)))
             prev = s
 
         if not merged:

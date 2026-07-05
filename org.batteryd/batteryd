@@ -167,6 +167,7 @@ class Battery:
         self.last_state = None
         self.session_start_ts = 0
         self.session_start_level = 0.0
+        self.session_start_energy = 0.0
 
         self.current = None
         self.flush_timer_id = 0
@@ -199,12 +200,13 @@ class Battery:
 
         if state_changed:
             if self.last_state is not None:
-                self._close_session(now, reading['level'])
+                self._close_session(now, reading['level'], reading['energy_wh'])
             self.session_start_ts = now
             self.session_start_level = reading['level']
+            self.session_start_energy = reading['energy_wh']
             self.last_state = state
 
-    def _close_session(self, end_ts, end_level):
+    def _close_session(self, end_ts, end_level, end_energy=0.0):
         if self.session_start_ts == 0:
             return
         status = STATE_NAMES.get(self.last_state, 'Unknown')
@@ -213,6 +215,14 @@ class Battery:
             ' VALUES (?, ?, ?, ?, ?)',
             (self.session_start_ts, end_ts,
              self.session_start_level, end_level, status))
+        # avg watts over the session; skip sub-minute blips where
+        # energy-delta/time extrapolates into nonsense
+        dur = end_ts - self.session_start_ts
+        if dur >= 60 and self.session_start_energy > 0 and end_energy > 0:
+            avg_w = abs(end_energy - self.session_start_energy) / (dur / 3600)
+            log.debug('session %s: %.1f%%→%.1f%% over %.2fh, %.1f W avg',
+                       status, self.session_start_level, end_level,
+                       dur / 3600, avg_w)
 
     def _log_event(self, event_type):
         now = time.time()
@@ -229,7 +239,8 @@ class Battery:
                 reading['power_w'], reading['voltage_v'], float(reading['state'])))
             self.last_sample_ts = now
         if self.current and self.last_state is not None:
-            self._close_session(now, self.current['level'])
+            self._close_session(now, self.current['level'],
+                                self.current['energy_wh'])
         self._log_event('suspend')
         self.flush()
         self.session_start_ts = 0
@@ -254,6 +265,7 @@ class Battery:
         self.last_state = state
         self.session_start_ts = now
         self.session_start_level = reading['level']
+        self.session_start_energy = reading['energy_wh']
         log.debug('resumed: %.1f%% %s', reading['level'],
                    STATE_NAMES.get(state, '?'))
 
@@ -270,7 +282,8 @@ class Battery:
 
     def shutdown(self):
         if self.current and self.last_state is not None:
-            self._close_session(time.time(), self.current['level'])
+            self._close_session(time.time(), self.current['level'],
+                                self.current['energy_wh'])
         self._log_event('shutdown')
         self.flush()
         self.db.commit()
@@ -283,6 +296,7 @@ class Battery:
             self.last_state = reading['state']
             self.session_start_ts = now
             self.session_start_level = reading['level']
+            self.session_start_energy = reading['energy_wh']
             self.buf.append((
                 now, reading['level'], reading['energy_wh'],
                 reading['power_w'], reading['voltage_v'],
